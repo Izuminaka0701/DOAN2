@@ -1,45 +1,24 @@
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torchvision import datasets, transforms
-from torch.utils.data import DataLoader
+import torchvision
+import torchvision.transforms as transforms
 import matplotlib.pyplot as plt
-import time
-import torch.nn.functional as F
+from torch.utils.data import DataLoader
+from tqdm import tqdm
 
 # Kiểm tra GPU
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using device: {device}")
 
-# Chuẩn bị dữ liệu MNIST & CIFAR-10
-transform_mnist = transforms.Compose([
-    transforms.ToTensor(),
-    transforms.Normalize((0.5,), (0.5,))
-])
-
-transform_cifar = transforms.Compose([
-    transforms.ToTensor(),
-    transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
-])
-
-train_mnist = datasets.MNIST(root='./data', train=True, download=True, transform=transform_mnist)
-test_mnist = datasets.MNIST(root='./data', train=False, download=True, transform=transform_mnist)
-train_cifar = datasets.CIFAR10(root='./data', train=True, download=True, transform=transform_cifar)
-test_cifar = datasets.CIFAR10(root='./data', train=False, download=True, transform=transform_cifar)
-
-train_loader_mnist = DataLoader(train_mnist, batch_size=64, shuffle=True)
-test_loader_mnist = DataLoader(test_mnist, batch_size=1, shuffle=False)
-train_loader_cifar = DataLoader(train_cifar, batch_size=64, shuffle=True)
-test_loader_cifar = DataLoader(test_cifar, batch_size=1, shuffle=False)
-
-# Mô hình CNN cho MNIST & CIFAR-10
+# =========================== Mô hình CNN cho MNIST =========================== #
 class CNN(nn.Module):
-    def __init__(self, input_channels):
+    def __init__(self):
         super(CNN, self).__init__()
-        self.conv1 = nn.Conv2d(input_channels, 32, kernel_size=3, padding=1)
+        self.conv1 = nn.Conv2d(1, 32, kernel_size=3, padding=1)
         self.conv2 = nn.Conv2d(32, 64, kernel_size=3, padding=1)
         self.pool = nn.MaxPool2d(kernel_size=2, stride=2)
-        self.fc1 = nn.Linear(64 * 7 * 7 if input_channels == 1 else 64 * 8 * 8, 128)
+        self.fc1 = nn.Linear(64 * 7 * 7, 128)
         self.fc2 = nn.Linear(128, 10)
         self.relu = nn.ReLU()
         self.dropout = nn.Dropout(0.5)
@@ -47,67 +26,114 @@ class CNN(nn.Module):
     def forward(self, x):
         x = self.pool(self.relu(self.conv1(x)))
         x = self.pool(self.relu(self.conv2(x)))
-        x = x.view(x.size(0), -1)
+        x = x.view(-1, 64 * 7 * 7)
         x = self.relu(self.fc1(x))
         x = self.dropout(x)
         x = self.fc2(x)
         return x
 
-# Hàm huấn luyện chung
-def train_model(model, train_loader, num_epochs=5):
+# =========================== Mô hình ResNet18 cho CIFAR-10 =========================== #
+class ResNet18(nn.Module):
+    def __init__(self):
+        super(ResNet18, self).__init__()
+        self.model = torchvision.models.resnet18(weights=torchvision.models.ResNet18_Weights.DEFAULT)
+        self.model.fc = nn.Linear(512, 10)
+
+    def forward(self, x):
+        return self.model(x)
+
+# =========================== Load dữ liệu MNIST =========================== #
+mnist_transform = transforms.Compose([
+    transforms.ToTensor(),
+    transforms.Normalize((0.5,), (0.5,))
+])
+
+mnist_train = torchvision.datasets.MNIST(root='./data', train=True, download=True, transform=mnist_transform)
+mnist_test = torchvision.datasets.MNIST(root='./data', train=False, download=True, transform=mnist_transform)
+
+mnist_train_loader = DataLoader(mnist_train, batch_size=64, shuffle=True)
+mnist_test_loader = DataLoader(mnist_test, batch_size=64, shuffle=False)
+
+# =========================== Load dữ liệu CIFAR-10 =========================== #
+cifar_transform = transforms.Compose([
+    transforms.RandomHorizontalFlip(),
+    transforms.RandomCrop(32, padding=4),
+    transforms.ToTensor(),
+    transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+])
+
+cifar_train = torchvision.datasets.CIFAR10(root='./data', train=True, download=True, transform=cifar_transform)
+cifar_test = torchvision.datasets.CIFAR10(root='./data', train=False, download=True, transform=cifar_transform)
+
+cifar_train_loader = DataLoader(cifar_train, batch_size=64, shuffle=True)
+cifar_test_loader = DataLoader(cifar_test, batch_size=64, shuffle=False)
+
+# =========================== Hàm huấn luyện =========================== #
+def train_model(model, train_loader, test_loader, epochs=5, learning_rate=0.001):
     model.to(device)
     criterion = nn.CrossEntropyLoss()
-    optimizer = optim.Adam(model.parameters(), lr=0.001)
-    loss_history = []
-    plt.ion()
+    optimizer = optim.Adam(model.parameters(), lr=learning_rate)
 
-    for epoch in range(num_epochs):
+    train_losses = []
+    test_accuracies = []
+
+    for epoch in range(epochs):
         model.train()
-        total_loss = 0
-        for images, labels in train_loader:
+        running_loss = 0.0
+        progress_bar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{epochs}")
+
+        for images, labels in progress_bar:
             images, labels = images.to(device), labels.to(device)
+
             optimizer.zero_grad()
             outputs = model(images)
             loss = criterion(outputs, labels)
             loss.backward()
             optimizer.step()
-            total_loss += loss.item()
-        
-        avg_loss = total_loss / len(train_loader)
-        loss_history.append(avg_loss)
-        plt.clf()
-        plt.plot(loss_history, label='Loss')
-        plt.legend()
-        plt.pause(0.1)
-        print(f"Epoch {epoch+1}/{num_epochs}, Loss: {avg_loss:.4f}")
-    
-    plt.ioff()
+
+            running_loss += loss.item()
+            progress_bar.set_postfix(loss=running_loss / len(train_loader))
+
+        train_losses.append(running_loss / len(train_loader))
+
+        # Đánh giá mô hình trên tập test
+        model.eval()
+        correct = 0
+        total = 0
+        with torch.no_grad():
+            for images, labels in test_loader:
+                images, labels = images.to(device), labels.to(device)
+                outputs = model(images)
+                _, predicted = torch.max(outputs, 1)
+                total += labels.size(0)
+                correct += (predicted == labels).sum().item()
+
+        accuracy = 100 * correct / total
+        test_accuracies.append(accuracy)
+        print(f"Epoch {epoch+1}: Loss = {train_losses[-1]:.4f}, Accuracy = {accuracy:.2f}%")
+
+    # Vẽ biểu đồ loss và accuracy
+    plt.figure(figsize=(12, 5))
+    plt.subplot(1, 2, 1)
+    plt.plot(range(1, epochs+1), train_losses, marker='o', linestyle='-', label='Loss')
+    plt.xlabel('Epochs')
+    plt.ylabel('Loss')
+    plt.title('Training Loss')
+    plt.legend()
+
+    plt.subplot(1, 2, 2)
+    plt.plot(range(1, epochs+1), test_accuracies, marker='o', linestyle='-', color='red', label='Accuracy')
+    plt.xlabel('Epochs')
+    plt.ylabel('Accuracy (%)')
+    plt.title('Test Accuracy')
+    plt.legend()
     plt.show()
 
-# Huấn luyện MNIST & CIFAR-10
-print("Training on MNIST")
-mnist_model = CNN(input_channels=1)
-train_model(mnist_model, train_loader_mnist)
+# =========================== Chạy huấn luyện =========================== #
+print("\nTraining CNN on MNIST...")
+mnist_model = CNN()
+train_model(mnist_model, mnist_train_loader, mnist_test_loader, epochs=5)
 
-print("Training on CIFAR-10")
-cifar_model = CNN(input_channels=3)
-train_model(cifar_model, train_loader_cifar)
-
-# # Mô hình LSTM cho xử lý ngôn ngữ tự nhiên (NLP)
-# class LSTMClassifier(nn.Module):
-#     def __init__(self, vocab_size, embedding_dim, hidden_dim, output_dim):
-#         super(LSTMClassifier, self).__init__()
-#         self.embedding = nn.Embedding(vocab_size, embedding_dim)
-#         self.lstm = nn.LSTM(embedding_dim, hidden_dim, batch_first=True)
-#         self.fc = nn.Linear(hidden_dim, output_dim)
-    
-#     def forward(self, x):
-#         x = self.embedding(x)
-#         x, _ = self.lstm(x)
-#         x = self.fc(x[:, -1, :])
-#         return x
-
-# Ví dụ: Huấn luyện LSTM trên dữ liệu văn bản (bỏ qua phần load dữ liệu)
-# vocab_size, embedding_dim, hidden_dim, output_dim = 5000, 128, 256, 2
-# lstm_model = LSTMClassifier(vocab_size, embedding_dim, hidden_dim, output_dim).to(device)
-# train_model(lstm_model, train_loader_text)
+print("\nTraining ResNet18 on CIFAR-10...")
+cifar_model = ResNet18()
+train_model(cifar_model, cifar_train_loader, cifar_test_loader, epochs=5)
